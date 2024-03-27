@@ -1,281 +1,117 @@
-from collections import defaultdict
-from pathlib import Path
-import sqlite3
-
 import streamlit as st
-import altair as alt
+import requests
 import pandas as pd
+import plotly.express as px
 
+# Fetch data from the Sleeper API
+url = "https://api.sleeper.app/v1/players/nfl"
+response = requests.get(url)
+players_data = response.json()
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='Inventory tracker',
-    page_icon=':shopping_bags:', # This is an emoji shortcode. Could be a URL too.
-)
+# Process the fetched data
+qb_data = []
+wr_data = []
+rb_data = []
+te_data = []
 
+for player_id, player_info in players_data.items():
+    if "fantasy_positions" in player_info:
+        if "QB" in player_info["fantasy_positions"]:
+            qb_data.append({"name": player_info["first_name"] + " " + player_info["last_name"], "player_id": player_id})
+        if "WR" in player_info["fantasy_positions"]:
+            wr_data.append({"name": player_info["first_name"] + " " + player_info["last_name"], "player_id": player_id})
+        if "RB" in player_info["fantasy_positions"]:
+            rb_data.append({"name": player_info["first_name"] + " " + player_info["last_name"], "player_id": player_id})
+        if "TE" in player_info["fantasy_positions"]:
+            te_data.append({"name": player_info["first_name"] + " " + player_info["last_name"], "player_id": player_id})
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+qb_df = pd.DataFrame(qb_data)
+wr_df = pd.DataFrame(wr_data)
+rb_df = pd.DataFrame(rb_data)
+te_df = pd.DataFrame(te_data)
 
-def connect_db():
-    '''Connects to the sqlite database.'''
+# Fetch trending players data
+def get_trending_players(position):
+    url = f"https://api.sleeper.app/v1/players/nfl/trending/add?lookback_hours=24&limit=25"
+    response = requests.get(url)
+    trending_players = response.json()
 
-    DB_FILENAME = Path(__file__).parent/'inventory.db'
-    db_already_exists = DB_FILENAME.exists()
+    trending_data = []
+    for player in trending_players:
+        if player["player_id"] in players_data:
+            player_info = players_data[player["player_id"]]
+            if position in player_info["fantasy_positions"]:
+                trending_data.append({"name": player_info["first_name"] + " " + player_info["last_name"], "count": player["count"]})
 
-    conn = sqlite3.connect(DB_FILENAME)
-    db_was_just_created = not db_already_exists
+    return pd.DataFrame(trending_data)
 
-    return conn, db_was_just_created
+qb_trending_df = get_trending_players("QB")
+wr_trending_df = get_trending_players("WR")
+rb_trending_df = get_trending_players("RB")
+te_trending_df = get_trending_players("TE")
 
-
-def initialize_data(conn):
-    '''Initializes the inventory table with some data.'''
-    cursor = conn.cursor()
-
-    cursor.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_name TEXT,
-            price REAL,
-            units_sold INTEGER,
-            units_left INTEGER,
-            cost_price REAL,
-            reorder_point INTEGER,
-            description TEXT
-        )
-        '''
-    )
-
-    cursor.execute(
-        '''
-        INSERT INTO inventory
-            (item_name, price, units_sold, units_left, cost_price, reorder_point, description)
-        VALUES
-            -- Beverages
-            ('Bottled Water (500ml)', 1.50, 115, 15, 0.80, 16, 'Hydrating bottled water'),
-            ('Soda (355ml)', 2.00, 93, 8, 1.20, 10, 'Carbonated soft drink'),
-            ('Energy Drink (250ml)', 2.50, 12, 18, 1.50, 8, 'High-caffeine energy drink'),
-            ('Coffee (hot, large)', 2.75, 11, 14, 1.80, 5, 'Freshly brewed hot coffee'),
-            ('Juice (200ml)', 2.25, 11, 9, 1.30, 5, 'Fruit juice blend'),
-
-            -- Snacks
-            ('Potato Chips (small)', 2.00, 34, 16, 1.00, 10, 'Salted and crispy potato chips'),
-            ('Candy Bar', 1.50, 6, 19, 0.80, 15, 'Chocolate and candy bar'),
-            ('Granola Bar', 2.25, 3, 12, 1.30, 8, 'Healthy and nutritious granola bar'),
-            ('Cookies (pack of 6)', 2.50, 8, 8, 1.50, 5, 'Soft and chewy cookies'),
-            ('Fruit Snack Pack', 1.75, 5, 10, 1.00, 8, 'Assortment of dried fruits and nuts'),
-
-            -- Personal Care
-            ('Toothpaste', 3.50, 1, 9, 2.00, 5, 'Minty toothpaste for oral hygiene'),
-            ('Hand Sanitizer (small)', 2.00, 2, 13, 1.20, 8, 'Small sanitizer bottle for on-the-go'),
-            ('Pain Relievers (pack)', 5.00, 1, 5, 3.00, 3, 'Over-the-counter pain relief medication'),
-            ('Bandages (box)', 3.00, 0, 10, 2.00, 5, 'Box of adhesive bandages for minor cuts'),
-            ('Sunscreen (small)', 5.50, 6, 5, 3.50, 3, 'Small bottle of sunscreen for sun protection'),
-
-            -- Household
-            ('Batteries (AA, pack of 4)', 4.00, 1, 5, 2.50, 3, 'Pack of 4 AA batteries'),
-            ('Light Bulbs (LED, 2-pack)', 6.00, 3, 3, 4.00, 2, 'Energy-efficient LED light bulbs'),
-            ('Trash Bags (small, 10-pack)', 3.00, 5, 10, 2.00, 5, 'Small trash bags for everyday use'),
-            ('Paper Towels (single roll)', 2.50, 3, 8, 1.50, 5, 'Single roll of paper towels'),
-            ('Multi-Surface Cleaner', 4.50, 2, 5, 3.00, 3, 'All-purpose cleaning spray'),
-
-            -- Others
-            ('Lottery Tickets', 2.00, 17, 20, 1.50, 10, 'Assorted lottery tickets'),
-            ('Newspaper', 1.50, 22, 20, 1.00, 5, 'Daily newspaper')
-        '''
-    )
-    conn.commit()
-
-
-def load_data(conn):
-    '''Loads the inventory data from the database.'''
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute('SELECT * FROM inventory')
-        data = cursor.fetchall()
-    except:
+# Create interactive charts using Plotly
+def create_trending_chart(df, position):
+    if not df.empty:
+        fig = px.bar(df, x="name", y="count", title=f"Trending {position}s (Last 24 hours)")
+        fig.update_layout(xaxis_title="Player", yaxis_title="Number of Adds")
+        return fig
+    else:
         return None
 
-    df = pd.DataFrame(data,
-        columns=[
-            'id',
-            'item_name',
-            'price',
-            'units_sold',
-            'units_left',
-            'cost_price',
-            'reorder_point',
-            'description',
-        ])
+qb_trending_chart = create_trending_chart(qb_trending_df, "QB")
+wr_trending_chart = create_trending_chart(wr_trending_df, "WR")
+rb_trending_chart = create_trending_chart(rb_trending_df, "RB")
+te_trending_chart = create_trending_chart(te_trending_df, "TE")
 
-    return df
+# Build the Streamlit app
+st.set_page_config(page_title="Fantasy Football Insights", layout="wide")
 
+st.title("Fantasy Football Insights")
 
-def update_data(conn, df, changes):
-    '''Updates the inventory data in the database.'''
-    cursor = conn.cursor()
+st.header("Trending Players (Last 24 hours)")
 
-    if changes['edited_rows']:
-        deltas = st.session_state.inventory_table['edited_rows']
-        rows = []
+col1, col2 = st.columns(2)
 
-        for i, delta in deltas.items():
-            row_dict = df.iloc[i].to_dict()
-            row_dict.update(delta)
-            rows.append(row_dict)
+with col1:
+    if qb_trending_chart:
+        st.subheader("Quarterbacks")
+        st.plotly_chart(qb_trending_chart)
+    
+    if rb_trending_chart:
+        st.subheader("Running Backs")
+        st.plotly_chart(rb_trending_chart)
 
-        cursor.executemany(
-            '''
-            UPDATE inventory
-            SET
-                item_name = :item_name,
-                price = :price,
-                units_sold = :units_sold,
-                units_left = :units_left,
-                cost_price = :cost_price,
-                reorder_point = :reorder_point,
-                description = :description
-            WHERE id = :id
-            ''',
-            rows,
-        )
+with col2:
+    if wr_trending_chart:
+        st.subheader("Wide Receivers")
+        st.plotly_chart(wr_trending_chart)
+    
+    if te_trending_chart:
+        st.subheader("Tight Ends")
+        st.plotly_chart(te_trending_chart)
 
-    if changes['added_rows']:
-        cursor.executemany(
-            '''
-            INSERT INTO inventory
-                (id, item_name, price, units_sold, units_left, cost_price, reorder_point, description)
-            VALUES
-                (:id, :item_name, :price, :units_sold, :units_left, :cost_price, :reorder_point, :description)
-            ''',
-            (defaultdict(lambda: None, row) for row in changes['added_rows']),
-        )
+# Additional insights and features
+st.header("Player Lookup")
 
-    if changes['deleted_rows']:
-        cursor.executemany(
-            'DELETE FROM inventory WHERE id = :id',
-            ({'id': int(df.loc[i, 'id'])} for i in changes['deleted_rows'])
-        )
+selected_position = st.selectbox("Select Position", ["QB", "WR", "RB", "TE"])
 
-    conn.commit()
+if selected_position == "QB":
+    selected_player = st.selectbox("Select Player", qb_df["name"])
+    player_id = qb_df[qb_df["name"] == selected_player]["player_id"].values[0]
+elif selected_position == "WR":
+    selected_player = st.selectbox("Select Player", wr_df["name"])
+    player_id = wr_df[wr_df["name"] == selected_player]["player_id"].values[0]
+elif selected_position == "RB":
+    selected_player = st.selectbox("Select Player", rb_df["name"])
+    player_id = rb_df[rb_df["name"] == selected_player]["player_id"].values[0]
+else:
+    selected_player = st.selectbox("Select Player", te_df["name"])
+    player_id = te_df[te_df["name"] == selected_player]["player_id"].values[0]
 
-
-# -----------------------------------------------------------------------------
-# Draw the actual page, starting with the inventory table.
-
-# Set the title that appears at the top of the page.
-'''
-# :shopping_bags: Inventory tracker
-
-**Welcome to Alice's Corner Store's intentory tracker!**
-This page reads and writes directly from/to our inventory database.
-'''
-
-st.info('''
-    Use the table below to add, remove, and edit items.
-    And don't forget to commit your changes when you're done.
-    ''')
-
-# Connect to database and create table if needed
-conn, db_was_just_created = connect_db()
-
-# Initialize data.
-if db_was_just_created:
-    initialize_data(conn)
-    st.toast('Database initialized with some sample data.')
-
-# Load data from database
-df = load_data(conn)
-
-# Display data with editable table
-edited_df = st.data_editor(
-    df,
-    disabled=['id'], # Don't allow editing the 'id' column.
-    num_rows='dynamic', # Allow appending/deleting rows.
-    column_config={
-        # Show dollar sign before price columns.
-        "price": st.column_config.NumberColumn(format="$%.2f"),
-        "cost_price": st.column_config.NumberColumn(format="$%.2f"),
-    },
-    key='inventory_table')
-
-has_uncommitted_changes = any(len(v) for v in st.session_state.inventory_table.values())
-
-st.button(
-    'Commit changes',
-    type='primary',
-    disabled=not has_uncommitted_changes,
-    # Update data in database
-    on_click=update_data,
-    args=(conn, df, st.session_state.inventory_table))
-
-
-# -----------------------------------------------------------------------------
-# Now some cool charts
-
-# Add some space
-''
-''
-''
-
-st.subheader('Units left', divider='red')
-
-need_to_reorder = df[df['units_left'] < df['reorder_point']].loc[:, 'item_name']
-
-if len(need_to_reorder) > 0:
-    items = '\n'.join(f'* {name}' for name in need_to_reorder)
-
-    st.error(f"We're running dangerously low on the items below:\n {items}")
-
-''
-''
-
-st.altair_chart(
-    # Layer 1: Bar chart.
-    alt.Chart(df)
-        .mark_bar(
-            orient='horizontal',
-        )
-        .encode(
-            x='units_left',
-            y='item_name',
-        )
-    # Layer 2: Chart showing the reorder point.
-    + alt.Chart(df)
-        .mark_point(
-            shape='diamond',
-            filled=True,
-            size=50,
-            color='salmon',
-            opacity=1,
-        )
-        .encode(
-            x='reorder_point',
-            y='item_name',
-        )
-    ,
-    use_container_width=True)
-
-st.caption('NOTE: The :diamonds: location shows the reorder point.')
-
-''
-''
-''
-
-# -----------------------------------------------------------------------------
-
-st.subheader('Best sellers', divider='orange')
-
-''
-''
-
-st.altair_chart(alt.Chart(df)
-    .mark_bar(orient='horizontal')
-    .encode(
-        x='units_sold',
-        y=alt.Y('item_name').sort('-x'),
-    ),
-    use_container_width=True)
+player_info = players_data[player_id]
+st.subheader("Player Information")
+st.write(f"Name: {player_info['first_name']} {player_info['last_name']}")
+st.write(f"Position: {', '.join(player_info['fantasy_positions'])}")
+st.write(f"Team: {player_info['team']}")
+st.write(f"Status: {player_info['status']}")
